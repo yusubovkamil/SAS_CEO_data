@@ -1,0 +1,325 @@
+* importing the data;
+libname f '/folders/myfolders/sasuser.v94/FE';
+ proc import datafile = '/folders/myfolders/sasuser.v94/FE/ceodata.csv'
+ out = f.ceodata
+ dbms = csv
+ replace;
+run;
+proc import datafile = '/folders/myfolders/sasuser.v94/FE/CRSP.csv'
+ out = f.CRSP
+ dbms = csv
+ replace;
+run;
+proc import datafile = '/folders/myfolders/sasuser.v94/FE/cstat_qtr.csv'
+ out = f.cstat_qtr
+ dbms = csv
+ replace;
+run;
+proc import datafile = '/folders/myfolders/sasuser.v94/FE/compustat.csv'
+ out = f.compustat
+ dbms = csv
+ replace;
+run;
+* calculating variables;
+data f.compustat;
+	set f.compustat;
+	me = csho * prcc_f;	
+run;
+data f.compustat;
+	set f.compustat;
+	lat = log(lt);
+run;
+data f.compustat;
+	set f.compustat;
+	lppent = lag(ppent);
+run;
+data f.compustat;
+	set f.compustat;
+	inv = (capx - sppe)/lppent;
+	
+run;
+data f.compustat;
+	set f.compustat;
+	booklev  = dt/at;
+run;
+data f.compustat;
+	set f.compustat;
+	mktlev = dt/(at - be + me);
+run;
+data f.compustat;
+	set f.compustat;
+	netlev = (dt-che)/at;
+run;
+data f.compustat;
+	set f.compustat;
+	rdint = xrd/at;
+run;
+data f.compustat;
+	set f.compustat;
+	rd  = xrd/revt;
+run;
+data f.compustat;
+	set f.compustat;
+	wc = (wcap - che)/at;
+run;
+data f.compustat;
+	set f.compustat;
+	profit = (sale - cogs - xsga)/at;
+run;
+data f.compustat;
+	set f.compustat;
+	mtb = (at + me - be)/at;
+run;
+data f.compustat;
+	set f.compustat;
+	size = log (at);
+run;
+data f.compustat;
+	set f.compustat;
+	cash = che/at;
+run;
+data f.compustat;
+	set f.compustat;
+	logcash = log(che);	
+run;
+data f.compustat;
+	set f.compustat;
+	tobinq = (at - txditc + me - be)/at;
+run;
+data f.compustat;
+	set f.compustat;
+	nact = (act - lct)/at;
+run;
+data f.compustat;
+	set f.compustat;
+	altz = nact*1.2 + 1.4*re/at + 3.3*(ni + xint + txt)/at + 0.6*me/lt + 0.999*sale/at;
+run;
+data f.compustat;
+	set f.compustat;
+	cfat = cf/at;
+run;
+data f.compustat;
+	set f.compustat;
+	tltd = dltt/at;
+run;
+data f.compustat;
+	set f.compustat;
+	lsale = lag(sale);
+run;
+data f.compustat;
+	set f.compustat;
+	sg = log(sale) - log(lsale);
+run;
+data f.compustat;
+	set f.compustat;
+	if dvc>0 then
+	divpayer = 1 ;
+	else divpayer = 0;
+run;
+* step 3 : sic3 and WWWFF;
+data f.compustat;
+	set f.compustat;
+	sic3 = int(sic/10);	
+run;
+
+Proc means data=f.compustat mean nway;
+var sale;
+class sic3 year;
+output out=sale_sic3(drop=_type_ _freq_) mean=;
+run; 
+
+proc sql;
+create table f.sale_industry as select * from sale_sic3;
+
+data f.sale_industry;
+  set f.sale_industry;
+  retain count;
+  by sic3;
+  if first.sic3 then count=1;
+  else count=count+1;
+run;
+
+data f.sale_industry;
+set f.sale_industry;
+isg = log(sale) - log(lag(sale));
+run;
+
+proc sql;
+	create table f.compustat as
+	select L.*, R.*
+	FROM f.compustat as L
+	left join f.sale_industry as R
+	on L.sic3 = R.sic3 and L.year=R.year;
+quit;
+
+data f.compustat;
+	set f.compustat;
+	FFWW = -0.91*cfat - 0.062*divpayer+ 0.021*tltd - 0.044*size + 0.102*isg - 0.035*sg;
+	
+run;
+
+*step 4 operating leverage;
+proc sort data=f.cstat_qtr nodupkey;
+ by gvkey fyearq fqtr;
+run;
+
+data f.cstat_qtr;
+set f.cstat_qtr;
+dateforqtr = mdy( fqtr *3 ,1 ,fyearq);
+format dateforqtr date9.;
+dateforqtr=intnx('month',dateforqtr,0,'E');
+run;
+
+data f.compustat;
+set f.compustat;
+datadate = input(put(datadate,8.), yymmdd8.);
+format datadate date9.;
+
+proc sql;
+create table f.cstat_year as
+select a.gvkey, a.datadate, b.dateforqtr, b.fyearq, b.fqtr, b.saleq, b.oibdpq
+from f.compustat as a, f.cstat_qtr as b
+where a.gvkey = b.gvkey and intck('qtr', a.datadate, b.dateforqtr) between 0 and 12
+order by gvkey, datadate, fyearq, fqtr;
+quit;
+
+data f.cstat_year;
+  set f.cstat_year;
+  retain count;
+  by gvkey datadate;
+  if first.datadate then count=1;
+  else count=count+1;
+run;
+
+data f.ticker;
+  set f.cstat_year;
+  if count=8 then output;
+run;
+
+proc sql;
+create table f.cstat_year as 
+select b.*
+from f.ticker as a, f.cstat_year as b
+where a.gvkey = b.gvkey and a.datadate=b.datadate;
+quit;
+
+proc reg data=f.cstat_year noprint outest=f.coeff;
+by gvkey datadate;
+model oibdpq = saleq;
+quit;
+
+proc means data=f.cstat_year noprint;
+by gvkey datadate;
+var oibdpq saleq;
+output out=f.mean mean=oibdpq_mean saleq_mean;
+
+proc sql;
+create table f.elasticity as 
+select a.gvkey,a.datadate,a.saleq, b.oibdpq_mean, b.saleq_mean
+from f.coeff as a, f.mean as b
+where a.gvkey = b.gvkey and a.datadate=b.datadate;
+run;
+
+data f.elasticity;
+set f.elasticity;
+oplev= saleq * saleq_mean/oibdpq_mean;
+run;
+
+proc sql;
+create table f.compustat as 
+select a.*, b.oplev
+from f.compustat as a, f.elasticity as b
+where a.gvkey = b.gvkey and a.datadate=b.datadate;
+run;
+
+proc sort data=f.CRSP;
+ by gvkey fyenddt; 
+ quit;
+
+proc means data=f.crsp noprint;
+by gvkey fyenddt;
+var RET;
+output out=f.variance std=std;
+run;
+
+data f.variance;
+set f.variance;
+std_year = std*sqrt(12);
+run;
+
+proc sql;
+create table f.CRSP as
+select a.*, b.std_year
+from f.CRSP as a, f.variance as b
+where a.gvkey = b.gvkey and a.fyenddt=b.fyenddt;
+run;
+
+data f.CRSP;
+set f.CRSP;
+retain count;
+by gvkey fyenddt;
+if first.fyenddt then count=1;
+else count=count+1;
+retrf=ret-rf;
+run;
+
+data f.observation;
+  set f.crsp;
+  if count=30 then output;
+run;
+
+proc sql;
+create table f.crsp as 
+select b.*
+from f.observation as a, f.crsp as b
+where a.gvkey = b.gvkey and a.fyenddt=b.fyenddt;
+quit;
+
+proc reg data=f.crsp noprint;
+by gvkey fyenddt;
+model retrf =mktrf smb hml ;
+output out=f.crsp residual=res;
+quit;
+
+*PART2;
+
+
+proc means data=f.crsp noprint;
+by gvkey fyenddt;
+var res;
+output out=f.residual std=idsyn_std;
+run;
+
+data f.residual;
+set f.residual;
+idsyn_std_year=sqrt(12)*idsyn_std;
+run;
+
+
+proc sql;
+create table f.compustat as 
+select a.*, b.std_year,b.ret, c.idsyn_std_year
+from f.compustat as a, f.crsp as b, f.residual as c
+where a.gvkey = b.gvkey=c.gvkey and a.fyenddt=b.fyenddt=c.fyenddt;
+run;
+
+proc sort data=f.compustat nodupkey ;
+ by gvkey fyenddt;
+run;
+
+proc sql;
+create table f.compustat as
+select a.*, b.*
+from f.compustat as a, f.ceodata as b
+where a.gvkey = b.gvkey and a.fyenddt=b.fyenddt;
+quit;
+
+proc sort data=f.compustat nodupkey ;
+ by gvkey fyenddt;
+run;
+
+data f.compustat;
+set f.compustat;
+logceoage = log(ceoage);
+logceotenure = log(tenure);
+run;
